@@ -126,6 +126,14 @@ if st.button("🚀 Prediksi Potensi Kesuksesan Produk", use_container_width=True
         ]], dtype=np.float32)
         
         try:
+            # Sesuaikan dimensi input dengan yang diharapkan oleh scaler
+            scaler_dim = getattr(scaler, 'n_features_in_', getattr(scaler, 'target_dim', 11))
+            if input_features.shape[1] < scaler_dim:
+                pad = np.zeros((input_features.shape[0], scaler_dim - input_features.shape[1]), dtype=np.float32)
+                input_features = np.hstack([input_features, pad])
+            elif input_features.shape[1] > scaler_dim:
+                input_features = input_features[:, :scaler_dim]
+                
             # Melakukan standarisasi/penyesuaian dimensi fitur menggunakan scaler
             input_scaled = scaler.transform(input_features)
             
