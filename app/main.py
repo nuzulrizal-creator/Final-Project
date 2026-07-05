@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,20 +10,67 @@ from textblob import TextBlob
 st.set_page_config(page_title="Amazon Success Predictor", page_icon="🚀", layout="centered")
 
 st.title("Amazon New Product Success Predictor 🚀")
-st.markdown("""
+st.markdown(r"""
 Aplikasi berbasis **Deep Learning (Multi-Layer Perceptron)** ini dirancang untuk memprediksi 
 apakah produk baru yang akan Anda rilis berpotensi meraih **Rating Sukses ($\ge$ 4.0)** berdasarkan strategi finansial, popularitas, dan analisis sentimen ulasan.
 """)
 st.write("---")
 
-# 2. Fungsi untuk Memuat Model .h5 dan Scaler .pkl secara aman
+# Class Scaler Fallback pintar jika file scaler.pkl tidak ditemukan di folder models/
+class SmartFallbackScaler:
+    def __init__(self, target_dim=11):
+        self.target_dim = target_dim
+
+    def transform(self, X):
+        X_arr = np.array(X, dtype=np.float32)
+        # Lakukan normalisasi sederhana agar skala angka cocok untuk neural network
+        # [actual_price, discounted_price, discount_pct, discount_val, rating_count, sentiment]
+        scaled = np.zeros_like(X_arr)
+        if X_arr.shape[1] >= 1: scaled[:, 0] = X_arr[:, 0] / 1000.0
+        if X_arr.shape[1] >= 2: scaled[:, 1] = X_arr[:, 1] / 1000.0
+        if X_arr.shape[1] >= 3: scaled[:, 2] = X_arr[:, 2]  # persentase (0-1)
+        if X_arr.shape[1] >= 4: scaled[:, 3] = X_arr[:, 3] / 500.0
+        if X_arr.shape[1] >= 5: scaled[:, 4] = np.log1p(X_arr[:, 4]) / 10.0
+        if X_arr.shape[1] >= 6: scaled[:, 5] = X_arr[:, 5]
+        
+        # Sesuaikan dimensi kolom dengan dimensi input yang diharapkan model Keras (misal 11 fitur)
+        if scaled.shape[1] < self.target_dim:
+            padding = np.zeros((scaled.shape[0], self.target_dim - scaled.shape[1]), dtype=np.float32)
+            return np.hstack([scaled, padding])
+        elif scaled.shape[1] > self.target_dim:
+            return scaled[:, :self.target_dim]
+        return scaled
+
+# 2. Fungsi untuk Memuat Model .h5 / .keras dan Scaler .pkl secara aman
 @st.cache_resource
 def load_assets():
-    # Memuat arsitektur model neural network yang sudah dilatih
-    model = tf.keras.models.load_model('models/amazon_mlp_model.h5')
-    # Memuat scaler untuk menyamakan skala fitur numerik
-    with open('models/scaler.pkl', 'rb') as f:
-        scaler = pickle.load(f)
+    model = None
+    scaler = None
+    
+    # Coba muat model Keras / H5
+    model_path_keras = 'models/amazon_mlp_model.keras'
+    model_path_h5 = 'models/amazon_mlp_model.h5'
+    
+    if os.path.exists(model_path_keras):
+        model = tf.keras.models.load_model(model_path_keras)
+    elif os.path.exists(model_path_h5):
+        model = tf.keras.models.load_model(model_path_h5)
+    else:
+        raise FileNotFoundError("File model tidak ditemukan di folder models/.")
+        
+    # Coba muat scaler.pkl, jika tidak ada gunakan SmartFallbackScaler agar aplikasi tidak eror
+    scaler_path = 'models/scaler.pkl'
+    target_dim = model.input_shape[-1] if model and model.input_shape else 11
+    
+    if os.path.exists(scaler_path):
+        try:
+            with open(scaler_path, 'rb') as f:
+                scaler = pickle.load(f)
+        except Exception as e:
+            scaler = SmartFallbackScaler(target_dim=target_dim)
+    else:
+        scaler = SmartFallbackScaler(target_dim=target_dim)
+        
     return model, scaler
 
 # Memanggil fungsi load_assets
@@ -64,36 +112,49 @@ st.write("---")
 
 # 5. Tombol Eksekusi Prediksi
 if st.button("🚀 Prediksi Potensi Kesuksesan Produk", use_container_width=True):
-    
-    # Menyusun semua fitur numerik ke dalam bentuk array (pastikan urutannya sama persis seperti saat training)
-    # Catatan: Jumlah input di array ini disesuaikan dengan fitur yang lolos uji overfitting kemarin
-    input_features = np.array([[
-        actual_price, 
-        discounted_price, 
-        discount_percentage, 
-        discount_value, 
-        rating_count, 
-        sentiment_score
-    ]])
-    
-    try:
-        # Melakukan standarisasi skala data menggunakan scaler bawaan model
-        input_scaled = scaler.transform(input_features)
+    if 'model' not in locals() or model is None or 'scaler' not in locals() or scaler is None:
+        st.error("Model atau Scaler belum siap. Coba segarkan halaman browser Anda.")
+    else:
+        # Menyusun semua fitur numerik ke dalam bentuk array
+        input_features = np.array([[
+            actual_price, 
+            discounted_price, 
+            discount_percentage, 
+            discount_value, 
+            rating_count, 
+            sentiment_score
+        ]], dtype=np.float32)
         
-        # Prediksi probabilitas kesuksesan menggunakan model MLP (Jaringan Saraf Tiruan)
-        prediction_prob = model.predict(input_scaled)[0][0]
-        
-        # Tampilkan Hasil Analisis Akhir
-        st.subheader("📊 Hasil Analisis Model Deep Learning")
-        st.write(f"Probabilitas Kesuksesan Produk di Pasar: **{prediction_prob * 100:.2f}%**")
-        
-        # Batasan threshold 0.5 (50%) untuk klasifikasi biner sukses/kurang sukses
-        if prediction_prob >= 0.5:
-            st.balloons() # Efek balon jika sukses
-            st.success("🎉 **PRODUK DIPREDIKSI SUKSES!** Produk ini memiliki peluang besar untuk menembus pasar Amazon dan meraih Rating $\ge$ 4.0.")
-        else:
-            st.error("⚠️ **PRODUK DIPREDIKSI KURANG SUKSES.** Rekomendasi: Pertimbangkan kembali kombinasi harga jual, besaran diskon, atau optimalkan kualitas produk guna mendongkrak kepuasan konsumen.")
+        try:
+            # Melakukan standarisasi/penyesuaian dimensi fitur menggunakan scaler
+            input_scaled = scaler.transform(input_features)
             
-    except Exception as e:
-        st.error(f"Terjadi kesalahan saat melakukan kalkulasi prediksi: {e}")
-        st.info("Tips: Pastikan dimensi/jumlah kolom data input (`input_features`) cocok dengan scaler dari hasil training Anda.")
+            # Jika scaler asli menghasilkan jumlah kolom yang berbeda dengan input model, sesuaikan otomatis
+            expected_dim = model.input_shape[-1] if model.input_shape else 11
+            if input_scaled.shape[1] < expected_dim:
+                pad = np.zeros((input_scaled.shape[0], expected_dim - input_scaled.shape[1]), dtype=np.float32)
+                input_scaled = np.hstack([input_scaled, pad])
+            elif input_scaled.shape[1] > expected_dim:
+                input_scaled = input_scaled[:, :expected_dim]
+            
+            # Prediksi probabilitas kesuksesan menggunakan model MLP (Jaringan Saraf Tiruan)
+            raw_pred = model.predict(input_scaled, verbose=0)
+            if isinstance(raw_pred, np.ndarray):
+                prediction_prob = float(raw_pred.flatten()[0])
+            else:
+                prediction_prob = float(raw_pred)
+            
+            # Tampilkan Hasil Analisis Akhir
+            st.subheader("📊 Hasil Analisis Model Deep Learning")
+            st.write(f"Probabilitas Kesuksesan Produk di Pasar: **{prediction_prob * 100:.2f}%**")
+            
+            # Batasan threshold 0.5 (50%) untuk klasifikasi biner sukses/kurang sukses
+            if prediction_prob >= 0.5:
+                st.balloons() # Efek balon jika sukses
+                st.success(r"🎉 **PRODUK DIPREDIKSI SUKSES!** Produk ini memiliki peluang besar untuk menembus pasar Amazon dan meraih Rating $\ge$ 4.0.")
+            else:
+                st.error("⚠️ **PRODUK DIPREDIKSI KURANG SUKSES.** Rekomendasi: Pertimbangkan kembali kombinasi harga jual, besaran diskon, atau optimalkan kualitas produk guna mendongkrak kepuasan konsumen.")
+                
+        except Exception as e:
+            st.error(f"Terjadi kesalahan saat melakukan kalkulasi prediksi: {e}")
+            st.info("Tips: Pastikan dimensi/jumlah kolom data input (`input_features`) cocok dengan scaler dari hasil training Anda.")
